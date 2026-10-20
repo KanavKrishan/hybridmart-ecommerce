@@ -1,4 +1,3 @@
-
 const fs = require("fs");
 const path = require("path");
 const mysql = require("mysql2/promise");
@@ -18,7 +17,6 @@ function mysqlAdapter(pool) {
 
     async execute(text, params = []) {
       const [result] = await pool.execute(text, params);
-
       return {
         insertId: result.insertId,
         affectedRows: result.affectedRows,
@@ -39,7 +37,6 @@ function mysqlAdapter(pool) {
 
           async execute(text, params = []) {
             const [result] = await conn.execute(text, params);
-
             return {
               insertId: result.insertId,
               affectedRows: result.affectedRows,
@@ -49,7 +46,6 @@ function mysqlAdapter(pool) {
 
         const output = await work(tx);
         await conn.commit();
-
         return output;
       } catch (err) {
         try {
@@ -57,7 +53,7 @@ function mysqlAdapter(pool) {
         } catch (rollbackError) {
           console.error(
             "SQL: transaction rollback failed:",
-            rollbackError.message
+            rollbackError.message,
           );
         }
 
@@ -72,14 +68,12 @@ function mysqlAdapter(pool) {
 function sqliteRun(db, text, params = []) {
   return new Promise((resolve, reject) => {
     db.run(text, params, function onRun(err) {
-      if (err) {
-        reject(err);
-      } else {
-        resolve({
-          insertId: this.lastID,
-          affectedRows: this.changes,
-        });
-      }
+      if (err) return reject(err);
+
+      resolve({
+        insertId: this.lastID,
+        affectedRows: this.changes,
+      });
     });
   });
 }
@@ -87,11 +81,8 @@ function sqliteRun(db, text, params = []) {
 function sqliteAll(db, text, params = []) {
   return new Promise((resolve, reject) => {
     db.all(text, params, (err, rows) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(rows || []);
-      }
+      if (err) return reject(err);
+      resolve(rows || []);
     });
   });
 }
@@ -145,23 +136,23 @@ async function tryMysql() {
     waitForConnections: true,
     connectionLimit: 10,
     namedPlaceholders: false,
+    ssl: {
+      rejectUnauthorized: true,
+    },
   };
 
-  // Verify MySQL using the Aiven CA certificate.
-  // Never disable TLS certificate verification.
   const caPath = process.env.MYSQL_CA_PATH
     ? path.resolve(process.env.MYSQL_CA_PATH)
     : path.join(__dirname, "..", "certs", "ca.pem");
 
   if (fs.existsSync(caPath)) {
-    poolOptions.ssl = {
-      ca: fs.readFileSync(caPath, "utf8"),
-      rejectUnauthorized: true,
-    };
+    poolOptions.ssl.ca = fs.readFileSync(caPath, "utf8");
   } else {
-    poolOptions.ssl = {
-      rejectUnauthorized: true,
-    };
+    console.warn(
+      "SQL: CA certificate not found at",
+      caPath,
+      "- using Node's default trusted certificates.",
+    );
   }
 
   const pool = mysql.createPool(poolOptions);
@@ -174,7 +165,7 @@ async function tryMysql() {
       "..",
       "..",
       "database",
-      "schema.sql"
+      "schema.sql",
     );
 
     const raw = fs.readFileSync(schemaPath, "utf8");
@@ -187,7 +178,7 @@ async function tryMysql() {
           statement &&
           !statement.startsWith("--") &&
           !/^CREATE DATABASE/i.test(statement) &&
-          !/^USE /i.test(statement)
+          !/^USE /i.test(statement),
       );
 
     for (const statement of statements) {
@@ -201,7 +192,6 @@ async function tryMysql() {
     }
 
     console.log("SQL: connected to MySQL database", database);
-
     return mysqlAdapter(pool);
   } catch (err) {
     await pool.end().catch(() => {});
@@ -212,15 +202,9 @@ async function tryMysql() {
 async function openSqlite() {
   const file = path.isAbsolute(env.sqlitePath)
     ? env.sqlitePath
-    : path.join(
-        __dirname,
-        "..",
-        env.sqlitePath.replace(/^\.\/|^\//, "")
-      );
+    : path.join(__dirname, "..", env.sqlitePath.replace(/^\.\/|^\//, ""));
 
-  fs.mkdirSync(path.dirname(file), {
-    recursive: true,
-  });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
 
   const db = new sqlite3.Database(file);
 
@@ -231,7 +215,7 @@ async function openSqlite() {
     "..",
     "..",
     "database",
-    "schema.sqlite.sql"
+    "schema.sqlite.sql",
   );
 
   const raw = fs.readFileSync(schemaPath, "utf8");
@@ -246,14 +230,11 @@ async function openSqlite() {
   }
 
   console.log("SQL: using SQLite at", file);
-
   return sqliteAdapter(db);
 }
 
 async function connectSql() {
-  if (sql) {
-    return sql;
-  }
+  if (sql) return sql;
 
   const preferMysql = env.sqlDialect !== "sqlite";
 
@@ -264,14 +245,11 @@ async function connectSql() {
     } catch (err) {
       console.error("SQL: MySQL connection failed:", err.message);
 
-      // Never silently switch Render production to an empty SQLite DB.
       if (process.env.RENDER) {
         throw err;
       }
 
-      console.warn(
-        "SQL: falling back to SQLite for local development."
-      );
+      console.warn("SQL: falling back to SQLite for local development.");
     }
   }
 
