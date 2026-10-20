@@ -1,187 +1,128 @@
-const fs = require('fs');
-const path = require('path');
-const mysql = require('mysql2/promise');
-const sqlite3 = require('sqlite3').verbose();
-const env = require('./env');
 
-let sql = null;
+const fs = require("fs");
+const path = require("path");
+const mysql = require("mysql2/promise");
+const { Sequelize } = require("sequelize");
 
-function mysqlAdapter(pool) {
-  return {
-    kind: 'mysql',
-    async query(text, params = []) {
-      const [rows] = await pool.execute(text, params);
-      return rows;
+const isProduction = process.env.NODE_ENV === "production";
+const isRender = Boolean(process.env.RENDER);
+
+let sequelize;
+
+async function connectMySQL() {
+  const required = [
+    "MYSQL_HOST",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_PASSWORD",
+    "MYSQL_DATABASE",
+  ];
+
+  const missing = required.filter(
+    (key) => !process.env[key]
+  );
+
+  if (missing.length) {
+    throw new Error(
+      `Missing MySQL environment variables: ${missing.join(", ")}`
+    );
+  }
+
+  const caPath = path.resolve(
+    __dirname,
+    "../certs/ca.pem"
+  );
+
+  if (!fs.existsSync(caPath)) {
+    throw new Error(
+      `Aiven CA certificate not found at ${caPath}`
+    );
+  }
+
+  const ca = fs.readFileSync(caPath, "utf8");
+
+  if (!ca.includes("-----BEGIN CERTIFICATE-----")) {
+    throw new Error("Aiven CA file is not valid PEM text");
+  }
+
+  const config = {
+    host: process.env.MYSQL_HOST,
+    port: Number(process.env.MYSQL_PORT),
+    user: process.env.MYSQL_USER,
+    password: process.env.MYSQL_PASSWORD,
+    database: process.env.MYSQL_DATABASE,
+    ssl: {
+      ca,
+      rejectUnauthorized: true,
     },
-    async execute(text, params = []) {
-      const [result] = await pool.execute(text, params);
-      return {
-        insertId: result.insertId,
-        affectedRows: result.affectedRows
-      };
-    },
-    async withTransaction(work) {
-      const conn = await pool.getConnection();
-      try {
-        await conn.beginTransaction();
-        const tx = {
-          async query(text, params = []) {
-            const [rows] = await conn.execute(text, params);
-            return rows;
-          },
-          async execute(text, params = []) {
-            const [result] = await conn.execute(text, params);
-            return {
-              insertId: result.insertId,
-              affectedRows: result.affectedRows
-            };
-          }
-        };
-        const output = await work(tx);
-        await conn.commit();
-        return output;
-      } catch (err) {
-        await conn.rollback();
-        throw err;
-      } finally {
-        conn.release();
-      }
-    }
+    connectTimeout: 15000,
   };
-}
 
-function sqliteRun(db, text, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(text, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve({ insertId: this.lastID, affectedRows: this.changes });
-    });
-  });
-}
+  const connection = await mysql.createConnection(config);
 
-function sqliteAll(db, text, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(text, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows || []);
-    });
-  });
-}
-
-function sqliteAdapter(db) {
-  return {
-    kind: 'sqlite',
-    query(text, params = []) {
-      return sqliteAll(db, text, params);
-    },
-    execute(text, params = []) {
-      return sqliteRun(db, text, params);
-    },
-    async withTransaction(work) {
-      await sqliteRun(db, 'BEGIN IMMEDIATE');
-      const tx = {
-        query(text, params = []) {
-          return sqliteAll(db, text, params);
-        },
-        execute(text, params = []) {
-          return sqliteRun(db, text, params);
-        }
-      };
-      try {
-        const output = await work(tx);
-        await sqliteRun(db, 'COMMIT');
-        return output;
-      } catch (err) {
-        await sqliteRun(db, 'ROLLBACK');
-        throw err;
-      }
-    }
-  };
-}
-
-async function tryMysql() {
-  const { host, port, user, password, database } = env.mysql;
-  // Aiven requires TLS. Validate the server certificate using trusted CAs.
-  // The Aiven service already provides the database (defaultdb), so do not
-  // attempt CREATE DATABASE using the service user.
-  const pool = mysql.createPool({
-    host,
-    port,
-    user,
-    password,
-    database,
-    ssl: { rejectUnauthorized: true },
-    waitForConnections: true,
-    connectionLimit: 10,
-    namedPlaceholders: false
-  });
-  await pool.query('SELECT 1');
-
-  const schemaPath = path.join(__dirname, '..', '..', 'database', 'schema.sql');
-  const raw = fs.readFileSync(schemaPath, 'utf8');
-  const statements = raw
-    .split(';')
-    .map((s) => s.trim())
-    .filter(
-      (s) =>
-        s &&
-        !s.startsWith('--') &&
-        !/^CREATE DATABASE/i.test(s) &&
-        !/^USE /i.test(s)
+  try {
+    const [rows] = await connection.query(
+      "SELECT VERSION() AS version, DATABASE() AS db"
     );
 
-  for (const statement of statements) {
-    try {
-      await pool.query(statement);
-    } catch (err) {
-      if (!/already exists|Duplicate/i.test(err.message)) throw err;
+    console.log(
+      `MySQL connected: database=${rows[0].db}, version=${rows[0].version}`
+    );
+  } finally {
+    await connection.end();
+  }
+
+  sequelize = new Sequelize(
+    process.env.MYSQL_DATABASE,
+    process.env.MYSQL_USER,
+    process.env.MYSQL_PASSWORD,
+    {
+      host: process.env.MYSQL_HOST,
+      port: Number(process.env.MYSQL_PORT),
+      dialect: "mysql",
+      dialectOptions: {
+        ssl: {
+          ca,
+          rejectUnauthorized: true,
+        },
+      },
+      logging: false,
+      pool: {
+        max: 5,
+        min: 0,
+        acquire: 30000,
+        idle: 10000,
+      },
     }
-  }
+  );
 
-  return mysqlAdapter(pool);
+  await sequelize.authenticate();
+
+  console.log("SQL: MySQL connection verified");
+
+  return sequelize;
 }
 
-async function openSqlite() {
-  const file = path.isAbsolute(env.sqlitePath)
-    ? env.sqlitePath
-    : path.join(__dirname, '..', env.sqlitePath.replace(/^\.\//, ''));
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new sqlite3.Database(file);
-  await sqliteRun(db, 'PRAGMA foreign_keys = ON');
-  const schemaPath = path.join(__dirname, '..', '..', 'database', 'schema.sqlite.sql');
-  const raw = fs.readFileSync(schemaPath, 'utf8');
-  const statements = raw
-    .split(';')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const statement of statements) {
-    await sqliteRun(db, statement);
-  }
-  return sqliteAdapter(db);
-}
+async function connectDatabase() {
+  try {
+    return await connectMySQL();
+  } catch (error) {
+    console.error("MySQL connection failed:", error.message);
 
-async function connectSql() {
-  if (sql) return sql;
-
-  const preferMysql = env.sqlDialect !== 'sqlite';
-  if (preferMysql) {
-    try {
-      sql = await tryMysql();
-      console.log('SQL: connected to MySQL database', env.mysql.database);
-      return sql;
-    } catch (err) {
-      console.warn('SQL: MySQL not available (' + err.message + '). Falling back to SQLite.');
+    // Never silently fall back to a different database in production.
+    if (isProduction || isRender) {
+      throw error;
     }
+
+    // In local development, let your existing development
+    // database configuration handle SQLite if needed.
+    throw error;
   }
-
-  sql = await openSqlite();
-  console.log('SQL: using SQLite at', env.sqlitePath);
-  return sql;
 }
 
-function getSql() {
-  if (!sql) throw new Error('SQL database is not connected yet');
-  return sql;
-}
-
-module.exports = { connectSql, getSql };
+module.exports = {
+  connectDatabase,
+  get sequelize() {
+    return sequelize;
+  },
+};
