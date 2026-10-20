@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import matplotlib
@@ -22,7 +23,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pymysql
 from dotenv import load_dotenv
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
 
@@ -37,15 +38,40 @@ load_dotenv(ROOT.parent / "backend" / ".env")
 
 app = Flask(__name__)
 
+IS_PRODUCTION = os.getenv("NODE_ENV", "").lower() == "production" or bool(os.getenv("RENDER"))
+API_KEY = os.getenv("ANALYTICS_API_KEY", "")
+
+# The Express backend calls this service server-to-server, so browsers normally
+# never hit it. CORS is only needed if you open the endpoints from a frontend.
 CORS(
     app,
     origins=[
-        os.getenv(
-            "FRONTEND_ORIGIN",
-            "http://localhost:5173"
-        )
+        origin.strip().rstrip("/")
+        for origin in os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").split(",")
+        if origin.strip()
     ],
 )
+
+
+@app.before_request
+def require_api_key():
+    """Protect sales data when ANALYTICS_API_KEY is set (always set it in production)."""
+    if not API_KEY or request.path in ("/", "/health"):
+        return None
+    if request.headers.get("x-api-key") != API_KEY:
+        return jsonify({"message": "Invalid or missing API key."}), 401
+    return None
+
+
+@app.errorhandler(Exception)
+def handle_error(err):
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(err, HTTPException):
+        return jsonify({"message": err.description}), err.code
+    app.logger.exception("Unhandled analytics error")
+    return jsonify({"message": "Analytics query failed."}), 500
+
 
 LOW_STOCK_THRESHOLD = int(
     os.getenv("LOW_STOCK_THRESHOLD", "5")
@@ -84,6 +110,23 @@ def health():
 # Database connection
 # --------------------------------------------------
 
+def mysql_ssl_options():
+    """TLS for remote MySQL (Aiven etc.). MYSQL_SSL=auto|true|false."""
+    host = os.getenv("MYSQL_HOST", "localhost")
+    mode = os.getenv("MYSQL_SSL", "auto").lower()
+    is_local = host in ("localhost", "127.0.0.1", "::1")
+    enabled = (not is_local) if mode == "auto" else mode in ("1", "true", "yes", "on", "required")
+
+    if not enabled:
+        return None
+
+    ca_path = os.getenv("MYSQL_CA_PATH") or str(ROOT / "certs" / "ca.pem")
+    if os.path.exists(ca_path):
+        return {"ca": ca_path}
+    # No CA file shipped: verify against the system trust store instead.
+    return {"check_hostname": True}
+
+
 def connect_sql():
     dialect = os.getenv("SQL_DIALECT", "mysql").lower()
 
@@ -102,29 +145,20 @@ def connect_sql():
                 port=int(os.getenv("MYSQL_PORT", "3306")),
                 user=os.getenv("MYSQL_USER", "root"),
                 password=os.getenv("MYSQL_PASSWORD", ""),
-                database=os.getenv(
-                    "MYSQL_DATABASE",
-                    "hybrid_ecommerce_store",
-                ),
+                database=os.getenv("MYSQL_DATABASE", "hybrid_ecommerce_store"),
                 cursorclass=pymysql.cursors.Cursor,
-                connect_timeout=10,
-                ssl={"ssl": {}},
+                connect_timeout=15,
+                ssl=mysql_ssl_options(),
             )
         except Exception as err:
-            print(
-                "MySQL unavailable for analytics:",
-                str(err),
-            )
+            print("MySQL unavailable for analytics:", str(err))
 
-            # In production, don't silently switch to an empty
-            # local database when MySQL connection fails.
-            if os.getenv("RENDER"):
+            # In production, never silently switch to an empty local database.
+            if IS_PRODUCTION:
                 raise
 
     if not os.path.exists(sqlite_path):
-        raise FileNotFoundError(
-            f"SQLite file not found: {sqlite_path}"
-        )
+        raise FileNotFoundError(f"SQLite file not found: {sqlite_path}")
 
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
@@ -132,12 +166,28 @@ def connect_sql():
 
 
 def read_frame(sql: str) -> pd.DataFrame:
+    """Run a query and return a DataFrame with numeric columns coerced.
+
+    A plain cursor is used (instead of pd.read_sql on a PyMySQL connection)
+    to avoid pandas' DBAPI2 warning and to normalise DECIMAL values.
+    """
     conn = connect_sql()
 
     try:
-        return pd.read_sql(sql, conn)
+        cur = conn.cursor()
+        cur.execute(sql)
+        columns = [col[0] for col in cur.description]
+        rows = [tuple(row) for row in cur.fetchall()]
+        frame = pd.DataFrame(rows, columns=columns)
     finally:
         conn.close()
+
+    for col in frame.columns:
+        if frame[col].dtype == object and not frame[col].empty:
+            sample = frame[col].dropna()
+            if not sample.empty and all(isinstance(v, (int, float, Decimal)) for v in sample):
+                frame[col] = pd.to_numeric(frame[col])
+    return frame
 
 
 # --------------------------------------------------

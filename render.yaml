@@ -1,0 +1,79 @@
+# Render Blueprint: backend API + Python analytics (two Render web services).
+# The React frontend is deployed separately on Vercel (see frontend/vercel.json).
+#
+# Render dashboard -> New -> Blueprint -> pick this repo. Values marked
+# `sync: false` are prompted for during creation (never commit secrets).
+services:
+  # ---------------------------------------------------------------- Service 2
+  - type: web
+    name: hybridmart-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install --no-audit --no-fund
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_ORIGIN        # e.g. https://your-app.vercel.app
+        sync: false
+      - key: ALLOW_VERCEL_PREVIEWS
+        value: "false"
+      - key: SQL_DIALECT
+        value: mysql
+      - key: MYSQL_HOST
+        sync: false
+      - key: MYSQL_PORT
+        sync: false
+      - key: MYSQL_USER
+        sync: false
+      - key: MYSQL_PASSWORD
+        sync: false
+      - key: MYSQL_DATABASE
+        sync: false
+      - key: MONGO_URI              # MongoDB Atlas connection string
+        sync: false
+      - key: MONGO_DB_NAME
+        value: hybrid_ecommerce_store
+      - key: ANALYTICS_URL          # https://hybridmart-analytics.onrender.com
+        sync: false
+      - key: ANALYTICS_API_KEY      # same value as on the analytics service
+        sync: false
+      - key: SEED_ON_START          # loads demo data once; set to false afterwards
+        value: "true"
+
+  # ---------------------------------------------------------------- Service 3
+  - type: web
+    name: hybridmart-analytics
+    runtime: python
+    rootDir: python-analytics
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: NODE_ENV
+        value: production
+      - key: SQL_DIALECT
+        value: mysql
+      - key: MYSQL_HOST
+        sync: false
+      - key: MYSQL_PORT
+        sync: false
+      - key: MYSQL_USER
+        sync: false
+      - key: MYSQL_PASSWORD
+        sync: false
+      - key: MYSQL_DATABASE
+        sync: false
+      - key: ANALYTICS_API_KEY
+        sync: false
+      - key: LOW_STOCK_THRESHOLD
+        value: "5"

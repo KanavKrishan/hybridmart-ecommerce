@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 const STATUSES = ['Placed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'];
 
 export default function AdminOrders() {
   const [orders, setOrders] = useState([]);
+  const [message, setMessage] = useState('');
 
   async function load() {
     const { data } = await api.get('/orders/admin');
@@ -12,18 +13,24 @@ export default function AdminOrders() {
   }
 
   useEffect(() => {
-    load();
+    load().catch((err) => setMessage(errorMessage(err, 'Could not load orders.')));
   }, []);
 
   async function changeStatus(id, status) {
-    await api.patch(`/orders/admin/${id}/status`, { status });
-    load();
+    try {
+      await api.patch(`/orders/admin/${id}/status`, { status });
+      setMessage('');
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not update status.'));
+    }
+    load().catch(() => {});
   }
 
   return (
     <div className="container py-4">
       <h2>Admin · Orders</h2>
       <p className="text-muted">Cancelled orders are excluded from analytics revenue.</p>
+      {message && <div className="alert alert-warning">{message}</div>}
       <table className="table">
         <thead>
           <tr>

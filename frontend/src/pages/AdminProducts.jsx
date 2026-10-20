@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 const empty = {
   name: '',
@@ -22,7 +22,7 @@ export default function AdminProducts() {
   }
 
   useEffect(() => {
-    load();
+    load().catch((err) => setMessage(errorMessage(err, 'Could not load products.')));
   }, []);
 
   async function save(e) {
@@ -32,20 +32,24 @@ export default function AdminProducts() {
       price: Number(form.price),
       stock: Number(form.stock)
     };
-    if (editingId) await api.put(`/products/${editingId}`, payload);
-    else await api.post('/products', payload);
-    setForm(empty);
-    setEditingId(null);
-    setMessage('Saved.');
-    load();
+    try {
+      if (editingId) await api.put(`/products/${editingId}`, payload);
+      else await api.post('/products', payload);
+      setForm(empty);
+      setEditingId(null);
+      setMessage('Saved.');
+      load().catch(() => {});
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not save product.'));
+    }
   }
 
   async function remove(id) {
     try {
       await api.delete(`/products/${id}`);
-      load();
+      load().catch(() => {});
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Delete failed.');
+      setMessage(errorMessage(err, 'Delete failed.'));
     }
   }
 

@@ -173,14 +173,15 @@ Run tests only after checking the package scripts and database configuration.
 ```text
 hybrid-ecommerce-store/
 ├── frontend/
-├── backend/
-├── python-analytics/
-├── database/
+├── backend/            Express API (+ database/ schemas)   -> Render
+├── python-analytics/   Flask + Pandas analytics           -> Render
+├── frontend/           React + Vite                       -> Vercel
+├── render.yaml         Render Blueprint (backend + analytics)
 └── docs/
 ```
 
 ## Online Deployment
 
-See [docs/ONLINE_DEPLOYMENT.md](docs/ONLINE_DEPLOYMENT.md) for the project's deployment configuration for Render, Vercel, hosted SQL, and MongoDB Atlas.
+Three services: **frontend on Vercel**, **backend and analytics on Render** (`render.yaml`), with hosted **MySQL** and **MongoDB Atlas**. See [docs/ONLINE_DEPLOYMENT.md](docs/ONLINE_DEPLOYMENT.md) for step-by-step instructions.
 
 **Security note:** Never commit real `.env` files, database passwords, API keys, or production secrets to GitHub.

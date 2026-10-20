@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 import ProductCard from '../components/ProductCard.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -26,8 +26,8 @@ export default function Home() {
   }
 
   useEffect(() => {
-    load().catch(() => setMessage('Could not load products. Is the API running?'));
-  }, [category]);
+    load().catch((err) => setMessage(errorMessage(err, 'Could not load products.')));
+  }, [category]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function requireLogin() {
     if (!user) {
@@ -39,14 +39,22 @@ export default function Home() {
 
   async function addCart(id) {
     if (!requireLogin()) return;
-    await api.post('/cart/items', { product_id: id, quantity: 1 });
-    setMessage('Added to cart.');
+    try {
+      await api.post('/cart/items', { product_id: id, quantity: 1 });
+      setMessage('Added to cart.');
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not add to cart.'));
+    }
   }
 
   async function addWish(id) {
     if (!requireLogin()) return;
-    await api.post('/wishlist/items', { product_id: id });
-    setMessage('Added to wishlist.');
+    try {
+      await api.post('/wishlist/items', { product_id: id });
+      setMessage('Added to wishlist.');
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not add to wishlist.'));
+    }
   }
 
   return (

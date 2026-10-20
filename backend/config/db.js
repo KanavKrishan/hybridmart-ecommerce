@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 const mysql = require("mysql2/promise");
-const sqlite3 = require("sqlite3").verbose();
 const env = require("./env");
 
 let sql = null;
@@ -124,10 +123,46 @@ function sqliteAdapter(db) {
   };
 }
 
+const DB_DIR = path.join(__dirname, "..", "database");
+
+// Remove "-- comment" lines, then split into individual statements.
+function readStatements(file) {
+  const raw = fs.readFileSync(file, "utf8");
+  const withoutComments = raw
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("--"))
+    .join("\n");
+
+  return withoutComments
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+function resolveMysqlSsl() {
+  const { host, ssl, caPath } = env.mysql;
+  const isLocal = ["localhost", "127.0.0.1", "::1"].includes(host);
+  const enabled = ssl === "auto" ? !isLocal : ["1", "true", "yes", "on", "required"].includes(ssl);
+
+  if (!enabled) return undefined;
+
+  const options = { rejectUnauthorized: true };
+  const file = caPath
+    ? path.resolve(caPath)
+    : path.join(__dirname, "..", "certs", "ca.pem");
+
+  if (fs.existsSync(file)) {
+    options.ca = fs.readFileSync(file, "utf8");
+  } else {
+    console.warn("SQL: CA certificate not found at", file, "- using Node's default trusted certificates.");
+  }
+  return options;
+}
+
 async function tryMysql() {
   const { host, port, user, password, database } = env.mysql;
 
-  const poolOptions = {
+  const pool = mysql.createPool({
     host,
     port,
     user,
@@ -135,63 +170,29 @@ async function tryMysql() {
     database,
     waitForConnections: true,
     connectionLimit: 10,
+    connectTimeout: 15000,
+    enableKeepAlive: true,
     namedPlaceholders: false,
-    ssl: {
-      rejectUnauthorized: true,
-    },
-  };
-
-  const caPath = process.env.MYSQL_CA_PATH
-    ? path.resolve(process.env.MYSQL_CA_PATH)
-    : path.join(__dirname, "..", "certs", "ca.pem");
-
-  if (fs.existsSync(caPath)) {
-    poolOptions.ssl.ca = fs.readFileSync(caPath, "utf8");
-  } else {
-    console.warn(
-      "SQL: CA certificate not found at",
-      caPath,
-      "- using Node's default trusted certificates.",
-    );
-  }
-
-  const pool = mysql.createPool(poolOptions);
+    ssl: resolveMysqlSsl()
+  });
 
   try {
     await pool.query("SELECT 1");
 
-    const schemaPath = path.join(
-      __dirname,
-      "..",
-      "..",
-      "database",
-      "schema.sql",
-    );
+    for (const statement of readStatements(path.join(DB_DIR, "schema.sql"))) {
+      if (/^(CREATE DATABASE|USE)\b/i.test(statement)) continue;
 
-    const raw = fs.readFileSync(schemaPath, "utf8");
-
-    const statements = raw
-      .split(";")
-      .map((statement) => statement.trim())
-      .filter(
-        (statement) =>
-          statement &&
-          !statement.startsWith("--") &&
-          !/^CREATE DATABASE/i.test(statement) &&
-          !/^USE /i.test(statement),
-      );
-
-    for (const statement of statements) {
       try {
         await pool.query(statement);
       } catch (err) {
-        if (!/already exists|Duplicate/i.test(err.message)) {
+        // Re-running CREATE INDEX on an existing index is expected on every boot.
+        if (err.code !== "ER_DUP_KEYNAME" && !/already exists|Duplicate key name/i.test(err.message)) {
           throw err;
         }
       }
     }
 
-    console.log("SQL: connected to MySQL database", database);
+    console.log("SQL: connected to MySQL database", database, "on", host);
     return mysqlAdapter(pool);
   } catch (err) {
     await pool.end().catch(() => {});
@@ -200,6 +201,8 @@ async function tryMysql() {
 }
 
 async function openSqlite() {
+  const sqlite3 = require("sqlite3").verbose();
+
   const file = path.isAbsolute(env.sqlitePath)
     ? env.sqlitePath
     : path.join(__dirname, "..", env.sqlitePath.replace(/^\.\/|^\//, ""));
@@ -210,22 +213,7 @@ async function openSqlite() {
 
   await sqliteRun(db, "PRAGMA foreign_keys = ON");
 
-  const schemaPath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "database",
-    "schema.sqlite.sql",
-  );
-
-  const raw = fs.readFileSync(schemaPath, "utf8");
-
-  const statements = raw
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
-
-  for (const statement of statements) {
+  for (const statement of readStatements(path.join(DB_DIR, "schema.sqlite.sql"))) {
     await sqliteRun(db, statement);
   }
 
@@ -236,18 +224,16 @@ async function openSqlite() {
 async function connectSql() {
   if (sql) return sql;
 
-  const preferMysql = env.sqlDialect !== "sqlite";
-
-  if (preferMysql) {
+  if (env.sqlDialect !== "sqlite") {
     try {
       sql = await tryMysql();
       return sql;
     } catch (err) {
       console.error("SQL: MySQL connection failed:", err.message);
 
-      if (process.env.RENDER) {
-        throw err;
-      }
+      // Never silently switch to an empty local file in production:
+      // the API and analytics services would end up on different data.
+      if (env.isProduction) throw err;
 
       console.warn("SQL: falling back to SQLite for local development.");
     }
@@ -265,7 +251,18 @@ function getSql() {
   return sql;
 }
 
+async function sqlStatus() {
+  if (!sql) return { status: "disconnected" };
+  try {
+    await sql.query("SELECT 1 AS ok");
+    return { status: "connected", kind: sql.kind };
+  } catch (err) {
+    return { status: "error", kind: sql.kind };
+  }
+}
+
 module.exports = {
   connectSql,
   getSql,
+  sqlStatus
 };

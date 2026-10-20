@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 export default function Cart() {
   const [cart, setCart] = useState({ items: [], total: 0 });
@@ -13,17 +13,26 @@ export default function Cart() {
   }
 
   useEffect(() => {
-    load().catch(() => setMessage('Could not load cart.'));
+    load().catch((err) => setMessage(errorMessage(err, 'Could not load cart.')));
   }, []);
 
   async function changeQty(productId, quantity) {
-    await api.patch(`/cart/items/${productId}`, { quantity });
-    load();
+    if (!Number.isInteger(quantity) || quantity < 1) return;
+    try {
+      await api.patch(`/cart/items/${productId}`, { quantity });
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not update quantity.'));
+    }
+    load().catch(() => {});
   }
 
   async function removeItem(productId) {
-    await api.delete(`/cart/items/${productId}`);
-    load();
+    try {
+      await api.delete(`/cart/items/${productId}`);
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not remove item.'));
+    }
+    load().catch(() => {});
   }
 
   async function checkout() {
@@ -32,8 +41,8 @@ export default function Cart() {
       const { data } = await api.post('/orders/checkout');
       navigate('/checkout', { state: data });
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Checkout failed.');
-      load();
+      setMessage(errorMessage(err, 'Checkout failed.'));
+      load().catch(() => {});
     }
   }
 

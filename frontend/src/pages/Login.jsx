@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Login() {
@@ -17,7 +17,7 @@ export default function Login() {
       login(data.token, data.user);
       navigate(data.user.role === 'admin' ? '/admin/analytics' : '/');
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed.');
+      setError(errorMessage(err, 'Login failed.'));
     }
   }
 

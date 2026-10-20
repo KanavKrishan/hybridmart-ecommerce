@@ -166,3 +166,9 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+# Never commit deployment secrets
+*-render.env
+backend/.env
+python-analytics/.env
+frontend/.env
+frontend/.env.local

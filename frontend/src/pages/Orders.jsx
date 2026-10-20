@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 const STATUS_CLASS = {
   Placed: 'bg-primary',
@@ -12,14 +12,19 @@ const STATUS_CLASS = {
 
 export default function Orders() {
   const [orders, setOrders] = useState([]);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    api.get('/orders/mine').then((res) => setOrders(res.data.orders));
+    api
+      .get('/orders/mine')
+      .then((res) => setOrders(res.data.orders))
+      .catch((err) => setError(errorMessage(err, 'Could not load your orders.')));
   }, []);
 
   return (
     <div className="container py-4">
       <h2>My orders</h2>
+      {error && <div className="alert alert-warning">{error}</div>}
       {orders.length === 0 && <p>You have not placed an order yet.</p>}
       {orders.map((order) => (
         <div className="card mb-3" key={order.id}>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function ProductDetail() {
@@ -17,19 +17,27 @@ export default function ProductDetail() {
   }
 
   useEffect(() => {
-    load().catch(() => setMessage('Product not found.'));
-  }, [id]);
+    load().catch((err) => setMessage(errorMessage(err, 'Product not found.')));
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addCart() {
     if (!user) return navigate('/login');
-    await api.post('/cart/items', { product_id: Number(id), quantity: 1 });
-    setMessage('Added to cart.');
+    try {
+      await api.post('/cart/items', { product_id: Number(id), quantity: 1 });
+      setMessage('Added to cart.');
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not add to cart.'));
+    }
   }
 
   async function addWish() {
     if (!user) return navigate('/login');
-    await api.post('/wishlist/items', { product_id: Number(id) });
-    setMessage('Added to wishlist.');
+    try {
+      await api.post('/wishlist/items', { product_id: Number(id) });
+      setMessage('Added to wishlist.');
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not add to wishlist.'));
+    }
   }
 
   async function submitReview(e) {
@@ -45,7 +53,7 @@ export default function ProductDetail() {
       setMessage('Review saved.');
       load();
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Could not save review.');
+      setMessage(errorMessage(err, 'Could not save review.'));
     }
   }
 

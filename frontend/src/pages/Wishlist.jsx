@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 export default function Wishlist() {
   const [items, setItems] = useState([]);
@@ -12,21 +12,25 @@ export default function Wishlist() {
   }
 
   useEffect(() => {
-    load().catch(() => setMessage('Could not load wishlist.'));
+    load().catch((err) => setMessage(errorMessage(err, 'Could not load wishlist.')));
   }, []);
 
   async function removeItem(id) {
-    await api.delete(`/wishlist/items/${id}`);
-    load();
+    try {
+      await api.delete(`/wishlist/items/${id}`);
+    } catch (err) {
+      setMessage(errorMessage(err, 'Could not remove item.'));
+    }
+    load().catch(() => {});
   }
 
   async function move(id) {
     try {
       await api.post(`/wishlist/items/${id}/move-to-cart`);
       setMessage('Moved to cart.');
-      load();
+      load().catch(() => {});
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Could not move item.');
+      setMessage(errorMessage(err, 'Could not move item.'));
     }
   }
 

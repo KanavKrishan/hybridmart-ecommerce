@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import api from '../services/api';
+import api, { errorMessage } from '../services/api';
 
 export default function AdminAnalytics() {
   const [summary, setSummary] = useState(null);
@@ -34,7 +34,7 @@ export default function AdminAnalytics() {
       chartUrlRef.current = url;
       setChartUrl(url);
     } catch (err) {
-      setError(err.response?.data?.message || 'Start the Python analytics service on port 5001.');
+      setError(errorMessage(err, 'Analytics service is unavailable.'));
     } finally {
       setLoading(false);
     }
