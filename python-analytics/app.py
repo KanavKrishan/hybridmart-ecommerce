@@ -1,9 +1,11 @@
-"""
-Flask analytics service.
 
-Reads the same SQL database that Express uses (MySQL preferred, SQLite fallback).
+"""
+HybridMart Analytics Service
+Flask API for sales analytics, product performance,
+revenue by category, low-stock products, and charts.
+
+Uses MySQL when configured, with SQLite as a fallback.
 Cancelled orders are excluded from revenue and units sold.
-The React app never talks to this service directly.
 """
 
 from __future__ import annotations
@@ -23,20 +25,73 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 
+
+# --------------------------------------------------
+# Configuration
+# --------------------------------------------------
+
 ROOT = Path(__file__).resolve().parent
+
 load_dotenv(ROOT / ".env")
 load_dotenv(ROOT.parent / "backend" / ".env")
 
 app = Flask(__name__)
-CORS(app, origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")])
 
-LOW_STOCK_THRESHOLD = int(os.getenv("LOW_STOCK_THRESHOLD", "5"))
-VALID_ORDER_SQL = "o.status <> 'Cancelled'"
+CORS(
+    app,
+    origins=[
+        os.getenv(
+            "FRONTEND_ORIGIN",
+            "http://localhost:5173"
+        )
+    ],
+)
 
+LOW_STOCK_THRESHOLD = int(
+    os.getenv("LOW_STOCK_THRESHOLD", "5")
+)
+
+
+# --------------------------------------------------
+# Homepage and health check
+# --------------------------------------------------
+
+@app.get("/")
+def home():
+    return jsonify({
+        "service": "HybridMart Analytics",
+        "status": "running",
+        "health": "/health",
+        "endpoints": [
+            "/analytics/summary",
+            "/analytics/top-products",
+            "/analytics/revenue-by-category",
+            "/analytics/low-stock",
+            "/analytics/chart/revenue-by-category",
+        ],
+    })
+
+
+@app.get("/health")
+def health():
+    return jsonify({
+        "ok": True,
+        "service": "python-analytics",
+    })
+
+
+# --------------------------------------------------
+# Database connection
+# --------------------------------------------------
 
 def connect_sql():
     dialect = os.getenv("SQL_DIALECT", "mysql").lower()
-    sqlite_path = os.getenv("SQLITE_PATH", str(ROOT.parent / "backend" / "data" / "store.sqlite"))
+
+    sqlite_path = os.getenv(
+        "SQLITE_PATH",
+        str(ROOT.parent / "backend" / "data" / "store.sqlite"),
+    )
+
     if not os.path.isabs(sqlite_path):
         sqlite_path = str((ROOT / sqlite_path).resolve())
 
@@ -47,14 +102,30 @@ def connect_sql():
                 port=int(os.getenv("MYSQL_PORT", "3306")),
                 user=os.getenv("MYSQL_USER", "root"),
                 password=os.getenv("MYSQL_PASSWORD", ""),
-                database=os.getenv("MYSQL_DATABASE", "hybrid_ecommerce_store"),
+                database=os.getenv(
+                    "MYSQL_DATABASE",
+                    "hybrid_ecommerce_store",
+                ),
                 cursorclass=pymysql.cursors.Cursor,
+                connect_timeout=10,
+                ssl={"ssl": {}},
             )
         except Exception as err:
-            print("MySQL unavailable for analytics, using SQLite:", err)
+            print(
+                "MySQL unavailable for analytics:",
+                str(err),
+            )
+
+            # In production, don't silently switch to an empty
+            # local database when MySQL connection fails.
+            if os.getenv("RENDER"):
+                raise
 
     if not os.path.exists(sqlite_path):
-        raise FileNotFoundError(f"SQLite file not found: {sqlite_path}")
+        raise FileNotFoundError(
+            f"SQLite file not found: {sqlite_path}"
+        )
+
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -62,11 +133,16 @@ def connect_sql():
 
 def read_frame(sql: str) -> pd.DataFrame:
     conn = connect_sql()
+
     try:
         return pd.read_sql(sql, conn)
     finally:
         conn.close()
 
+
+# --------------------------------------------------
+# Summary helpers
+# --------------------------------------------------
 
 def empty_summary():
     return {
@@ -74,90 +150,127 @@ def empty_summary():
         "total_revenue": 0.0,
         "total_items_sold": 0,
         "cancelled_excluded": True,
-        "note": "No qualifying orders yet. Place an order to refresh these numbers.",
+        "note": (
+            "No qualifying orders yet. "
+            "Place an order to refresh these numbers."
+        ),
     }
 
 
-@app.get("/health")
-def health():
-    return jsonify({"ok": True, "service": "python-analytics"})
-
+# --------------------------------------------------
+# Sales summary
+# GET /analytics/summary
+# --------------------------------------------------
 
 @app.get("/analytics/summary")
 def summary():
-    orders = read_frame("SELECT id, total_amount, status FROM orders")
+    orders = read_frame(
+        "SELECT id, total_amount, status FROM orders"
+    )
+
     if orders.empty:
         return jsonify(empty_summary())
 
-    valid = orders[orders["status"] != "Cancelled"]
+    valid = orders[
+        orders["status"].str.lower() != "cancelled"
+    ]
+
     items = read_frame(
         """
         SELECT oi.quantity
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
-        WHERE o.status <> 'Cancelled'
+        WHERE LOWER(o.status) <> 'cancelled'
         """
     )
-    total_items = int(items["quantity"].sum()) if not items.empty else 0
-    return jsonify(
-        {
-            "total_orders": int(len(valid)),
-            "total_revenue": round(float(valid["total_amount"].sum()) if not valid.empty else 0.0, 2),
-            "total_items_sold": total_items,
-            "cancelled_excluded": True,
-            "all_orders_including_cancelled": int(len(orders)),
-        }
+
+    total_items = (
+        int(items["quantity"].sum())
+        if not items.empty
+        else 0
     )
 
+    total_revenue = (
+        float(valid["total_amount"].sum())
+        if not valid.empty
+        else 0.0
+    )
+
+    return jsonify({
+        "total_orders": int(len(valid)),
+        "total_revenue": round(total_revenue, 2),
+        "total_items_sold": total_items,
+        "cancelled_excluded": True,
+        "all_orders_including_cancelled": int(len(orders)),
+    })
+
+
+# --------------------------------------------------
+# Top-selling products
+# GET /analytics/top-products
+# --------------------------------------------------
 
 @app.get("/analytics/top-products")
 def top_products():
     frame = read_frame(
         """
-        SELECT p.id, p.name, p.category,
-               SUM(oi.quantity) AS units_sold,
-               SUM(oi.quantity * oi.price_at_purchase) AS revenue
+        SELECT
+            p.id,
+            p.name,
+            p.category,
+            SUM(oi.quantity) AS units_sold,
+            SUM(oi.quantity * oi.price_at_purchase) AS revenue
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
         JOIN products p ON p.id = oi.product_id
-        WHERE o.status <> 'Cancelled'
+        WHERE LOWER(o.status) <> 'cancelled'
         GROUP BY p.id, p.name, p.category
         ORDER BY units_sold DESC
         """
     )
+
     if frame.empty:
         return jsonify({"products": []})
+
     records = []
+
     for _, row in frame.head(10).iterrows():
-        records.append(
-            {
-                "id": int(row["id"]),
-                "name": row["name"],
-                "category": row["category"],
-                "units_sold": int(row["units_sold"]),
-                "revenue": round(float(row["revenue"]), 2),
-            }
-        )
+        records.append({
+            "id": int(row["id"]),
+            "name": row["name"],
+            "category": row["category"],
+            "units_sold": int(row["units_sold"]),
+            "revenue": round(float(row["revenue"]), 2),
+        })
+
     return jsonify({"products": records})
 
+
+# --------------------------------------------------
+# Revenue by category
+# GET /analytics/revenue-by-category
+# --------------------------------------------------
 
 @app.get("/analytics/revenue-by-category")
 def revenue_by_category():
     frame = read_frame(
         """
-        SELECT p.category,
-               SUM(oi.quantity * oi.price_at_purchase) AS revenue,
-               SUM(oi.quantity) AS units_sold
+        SELECT
+            p.category,
+            SUM(oi.quantity * oi.price_at_purchase) AS revenue,
+            SUM(oi.quantity) AS units_sold
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
         JOIN products p ON p.id = oi.product_id
-        WHERE o.status <> 'Cancelled'
+        WHERE LOWER(o.status) <> 'cancelled'
         GROUP BY p.category
         ORDER BY revenue DESC
         """
     )
+
     if frame.empty:
         return jsonify({"categories": []})
+
     categories = [
         {
             "category": row["category"],
@@ -166,15 +279,31 @@ def revenue_by_category():
         }
         for _, row in frame.iterrows()
     ]
+
     return jsonify({"categories": categories})
 
 
+# --------------------------------------------------
+# Low-stock products
+# GET /analytics/low-stock
+# --------------------------------------------------
+
 @app.get("/analytics/low-stock")
 def low_stock():
-    frame = read_frame("SELECT id, name, category, stock, price FROM products")
+    frame = read_frame(
+        "SELECT id, name, category, stock, price FROM products"
+    )
+
     if frame.empty:
-        return jsonify({"threshold": LOW_STOCK_THRESHOLD, "products": []})
-    low = frame[frame["stock"] <= LOW_STOCK_THRESHOLD].sort_values("stock")
+        return jsonify({
+            "threshold": LOW_STOCK_THRESHOLD,
+            "products": [],
+        })
+
+    low = frame[
+        frame["stock"] <= LOW_STOCK_THRESHOLD
+    ].sort_values("stock")
+
     products = [
         {
             "id": int(row["id"]),
@@ -185,8 +314,17 @@ def low_stock():
         }
         for _, row in low.iterrows()
     ]
-    return jsonify({"threshold": LOW_STOCK_THRESHOLD, "products": products})
 
+    return jsonify({
+        "threshold": LOW_STOCK_THRESHOLD,
+        "products": products,
+    })
+
+
+# --------------------------------------------------
+# Revenue chart
+# GET /analytics/chart/revenue-by-category
+# --------------------------------------------------
 
 @app.get("/analytics/chart/revenue-by-category")
 def revenue_chart():
@@ -194,26 +332,69 @@ def revenue_chart():
     categories = payload.get("categories", [])
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    if not categories:
-        ax.text(0.5, 0.5, "No sales yet", ha="center", va="center", fontsize=14)
-        ax.set_axis_off()
-    else:
-        names = [c["category"] for c in categories]
-        values = [c["revenue"] for c in categories]
-        ax.bar(names, values, color="#4338ca")
-        ax.set_title("Revenue by category (₹), cancelled orders excluded")
-        ax.set_ylabel("Revenue (₹)")
-        ax.set_xlabel("Category")
-        plt.xticks(rotation=20, ha="right")
-        fig.tight_layout()
 
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=120)
-    plt.close(fig)
-    buffer.seek(0)
-    return send_file(buffer, mimetype="image/png")
+    try:
+        if not categories:
+            ax.text(
+                0.5,
+                0.5,
+                "No sales yet",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
+            ax.set_axis_off()
+        else:
+            names = [
+                item["category"]
+                for item in categories
+            ]
 
+            values = [
+                item["revenue"]
+                for item in categories
+            ]
+
+            ax.bar(names, values, color="#4338ca")
+
+            ax.set_title(
+                "Revenue by category (₹), "
+                "cancelled orders excluded"
+            )
+            ax.set_ylabel("Revenue (₹)")
+            ax.set_xlabel("Category")
+
+            plt.xticks(rotation=20, ha="right")
+            fig.tight_layout()
+
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=120)
+        buffer.seek(0)
+
+        return send_file(
+            buffer,
+            mimetype="image/png",
+        )
+    finally:
+        plt.close(fig)
+
+
+# --------------------------------------------------
+# Start server
+# --------------------------------------------------
 
 if __name__ == "__main__":
-    port = int(os.getenv("ANALYTICS_PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Render provides PORT automatically.
+    # ANALYTICS_PORT remains a local-development fallback.
+    port = int(
+        os.getenv(
+            "PORT",
+            os.getenv("ANALYTICS_PORT", "5001"),
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+    )

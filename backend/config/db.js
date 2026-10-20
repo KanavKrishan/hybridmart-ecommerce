@@ -101,18 +101,16 @@ function sqliteAdapter(db) {
 
 async function tryMysql() {
   const { host, port, user, password, database } = env.mysql;
-  const bootstrap = await mysql.createConnection({ host, port, user, password });
-  await bootstrap.query(
-    `CREATE DATABASE IF NOT EXISTS \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-  );
-  await bootstrap.end();
-
+  // Aiven requires TLS. Validate the server certificate using trusted CAs.
+  // The Aiven service already provides the database (defaultdb), so do not
+  // attempt CREATE DATABASE using the service user.
   const pool = mysql.createPool({
     host,
     port,
     user,
     password,
     database,
+    ssl: { rejectUnauthorized: true },
     waitForConnections: true,
     connectionLimit: 10,
     namedPlaceholders: false
