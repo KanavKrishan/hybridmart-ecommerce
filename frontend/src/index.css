@@ -1,0 +1,47 @@
+:root {
+  --indigo: #3730a3;
+  --indigo-soft: #eef2ff;
+  --ink: #0f172a;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: #f8fafc;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.navbar-hybrid {
+  background: var(--indigo);
+}
+
+.hero-band {
+  background: linear-gradient(120deg, #312e81, #4338ca);
+  color: white;
+  border-radius: 1rem;
+}
+
+.product-card img {
+  height: 180px;
+  object-fit: cover;
+  width: 100%;
+}
+
+.price {
+  color: var(--indigo);
+  font-weight: 700;
+}
+
+.badge-status {
+  font-size: 0.8rem;
+}
+
+.stat-card {
+  border: 0;
+  border-radius: 1rem;
+  box-shadow: 0 8px 24px rgba(55, 48, 163, 0.08);
+}
+
+.page-wrap {
+  min-height: calc(100vh - 140px);
+}
